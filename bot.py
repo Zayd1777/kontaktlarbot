@@ -1,7 +1,7 @@
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application,
+    ApplicationBuilder,
     CommandHandler,
     CallbackQueryHandler,
     MessageHandler,
@@ -13,7 +13,6 @@ import sqlite3
 import os
 from dotenv import load_dotenv
 
-# .env fayldan tokenni yuklash
 load_dotenv()
 
 # Loglama sozlash
@@ -38,6 +37,7 @@ def init_db():
     conn.commit()
     conn.close()
 
+# Kontakt qo'shish
 def add_contact(name, phone, profession, region):
     conn = sqlite3.connect('contacts.db')
     c = conn.cursor()
@@ -46,9 +46,11 @@ def add_contact(name, phone, profession, region):
     conn.commit()
     conn.close()
 
+# Kontaktlarni qidirish
 def search_contacts(region=None, profession=None):
     conn = sqlite3.connect('contacts.db')
     c = conn.cursor()
+
     if region and profession:
         c.execute("SELECT * FROM contacts WHERE region=? AND profession=?", (region, profession))
     elif region:
@@ -57,51 +59,31 @@ def search_contacts(region=None, profession=None):
         c.execute("SELECT * FROM contacts WHERE profession=?", (profession,))
     else:
         c.execute("SELECT * FROM contacts")
+
     results = c.fetchall()
     conn.close()
     return results
 
-def get_regions():
-    conn = sqlite3.connect('contacts.db')
-    c = conn.cursor()
-    c.execute("SELECT DISTINCT region FROM contacts WHERE region IS NOT NULL")
-    regions = [row[0] for row in c.fetchall()]
-    conn.close()
-    return regions
-
-def get_professions():
-    conn = sqlite3.connect('contacts.db')
-    c = conn.cursor()
-    c.execute("SELECT DISTINCT profession FROM contacts WHERE profession IS NOT NULL")
-    professions = [row[0] for row in c.fetchall()]
-    conn.close()
-    return professions
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    await update.message.reply_html(
-        rf"Salom {user.mention_html()}! Men kontaktlarni boshqaruvchi botman.",
-        reply_markup=main_menu_keyboard()
-    )
+# Inline Keyboard
 
 def main_menu_keyboard():
     keyboard = [
-        [InlineKeyboardButton("\u2795 Kontakt qo'shish", callback_data='add_contact')],
-        [InlineKeyboardButton("\ud83d\udd0d Kontakt qidirish", callback_data='search_contacts')],
-        [InlineKeyboardButton("\ud83d\udccd Hudud bo'yicha qidirish", callback_data='search_by_region')],
-        [InlineKeyboardButton("\ud83d\udc68\u200d\u2695\ufe0f Kasb bo'yicha qidirish", callback_data='search_by_profession')]
+        [InlineKeyboardButton("➕ Kontakt qo'shish", callback_data='add_contact')],
+        [InlineKeyboardButton("🔍 Kontakt qidirish", callback_data='all_contacts')],
     ]
     return InlineKeyboardMarkup(keyboard)
 
-async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text("Bosh menyu:", reply_markup=main_menu_keyboard())
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Salom! Men kontaktlarni boshqaruvchi botman.",
+        reply_markup=main_menu_keyboard()
+    )
 
+# Qo'shish jarayoni
 async def add_contact_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text("Kontakt ismini kiriting:")
+    await query.edit_message_text("Ismni kiriting:")
     return ADD_NAME
 
 async def add_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -111,24 +93,39 @@ async def add_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def add_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['phone'] = update.message.text
-    await update.message.reply_text("Kasbini kiriting:")
+    await update.message.reply_text("Kasbni kiriting:")
     return ADD_PROFESSION
 
 async def add_profession(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['profession'] = update.message.text
-    await update.message.reply_text("Hududni (shahar/tuman) kiriting:")
+    await update.message.reply_text("Hududni kiriting:")
     return ADD_REGION
 
 async def add_region(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['region'] = update.message.text
+
     add_contact(
         context.user_data['name'],
         context.user_data['phone'],
         context.user_data['profession'],
         context.user_data['region']
     )
-    await update.message.reply_text("\u2705 Kontakt muvaffaqiyatli qo'shildi!", reply_markup=main_menu_keyboard())
+    await update.message.reply_text("✅ Kontakt qo'shildi!", reply_markup=main_menu_keyboard())
     return ConversationHandler.END
+
+async def show_all_contacts(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    contacts = search_contacts()
+    if not contacts:
+        await query.edit_message_text("❌ Kontaktlar yo'q.")
+        return
+
+    message = "📋 Barcha kontaktlar:\n\n"
+    for contact in contacts[-10:]:
+        message += f"👤 {contact[1]}\n📞 {contact[2]}\n💼 {contact[3]}\n🌍 {contact[4]}\n\n"
+
+    await query.edit_message_text(message, reply_markup=main_menu_keyboard())
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text('Amal bekor qilindi.', reply_markup=main_menu_keyboard())
@@ -137,7 +134,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     init_db()
     TOKEN = os.getenv("BOT_TOKEN")
-    application = Application.builder().token(TOKEN).build()
+    app = ApplicationBuilder().token(TOKEN).build()
 
     conv_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(add_contact_start, pattern='^add_contact$')],
@@ -150,11 +147,11 @@ def main():
         fallbacks=[CommandHandler('cancel', cancel)]
     )
 
-    application.add_handler(CommandHandler('start', start))
-    application.add_handler(conv_handler)
-    application.add_handler(CallbackQueryHandler(main_menu, pattern='^main_menu$'))
+    app.add_handler(CommandHandler('start', start))
+    app.add_handler(conv_handler)
+    app.add_handler(CallbackQueryHandler(show_all_contacts, pattern='^all_contacts$'))
 
-    application.run_polling()
+    app.run_polling()
 
 if __name__ == '__main__':
     main()
